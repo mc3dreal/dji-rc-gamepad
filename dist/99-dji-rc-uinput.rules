@@ -1,0 +1,7 @@
+# Grant the locally logged-in user access to /dev/uinput so dji-rc-joystick
+# can create the virtual joystick without root.
+#
+# Install:  sudo cp 99-dji-rc-uinput.rules /etc/udev/rules.d/
+#           sudo udevadm control --reload-rules
+#           sudo modprobe uinput
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

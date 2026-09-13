@@ -1,0 +1,97 @@
+#!/bin/bash
+# Convenience launcher for dji-rc-joystick.
+#
+#   dji-rc-start                          use remembered IP, else ask
+#   dji-rc-start 192.168.1.42             give the IP directly
+#   dji-rc-start -V                       pass options through to the driver
+#
+# The remembered IP is stored in $XDG_STATE_HOME/dji-rc-linux/last-ip and is
+# only written after the address actually answered.
+
+set -u
+
+BIN="${DJI_RC_BIN:-}"
+if [ -z "$BIN" ]; then
+    for c in "$(dirname "$(readlink -f "$0")")/dji-rc-joystick" \
+             "$HOME/.local/lib/dji-rc-linux/dji-rc-joystick" \
+             "$(command -v dji-rc-joystick 2>/dev/null)"; do
+        [ -n "$c" ] && [ -x "$c" ] && { BIN="$c"; break; }
+    done
+fi
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/dji-rc-linux"
+mkdir -p "$STATE"
+IPFILE="$STATE/last-ip"
+PORT=40007
+LAST="$(cat "$IPFILE" 2>/dev/null || true)"
+
+pause() { read -rp "Press Enter to close..." _ || true; }
+
+echo "=== DJI RC Joystick ==="
+if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+    echo "ERROR: driver binary not found. Run install.sh, or set DJI_RC_BIN."
+    pause; exit 1
+fi
+if [ ! -w /dev/uinput ]; then
+    echo "WARNING: no write access to /dev/uinput - the virtual joystick will fail."
+    echo "         Install the udev rule (see README) or run with sudo."
+    echo
+fi
+
+is_ip() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
+reachable() { timeout 2 bash -c "exec 3<>/dev/tcp/$1/$PORT" 2>/dev/null; }
+
+VERIFIED=0
+check() {
+    printf '  testing %s ' "$1"
+    for _ in 1 2 3; do
+        printf '.'
+        if reachable "$1"; then echo " reachable"; VERIFIED=1; return 0; fi
+        sleep 1
+    done
+    echo " no answer"; return 1
+}
+
+IP=""
+if [ $# -gt 0 ] && is_ip "$1" ; then IP="$1"; shift; fi
+
+if pgrep -f 'dji-rc-joystic[k]' >/dev/null; then
+    read -rp "A driver instance is already running. Restart it? [y/N] " a
+    case "$a" in [yYjJ]*) pkill -f 'dji-rc-joystic[k]'; sleep 2 ;; *) exit 0 ;; esac
+fi
+
+if [ -n "$IP" ] && ! check "$IP"; then
+    read -rp "  Not reachable. Try anyway? [y/N] " f
+    case "$f" in [yYjJ]*) ;; *) IP="" ;; esac
+fi
+if [ -z "$IP" ] && [ -n "$LAST" ]; then check "$LAST" && IP="$LAST"; fi
+
+while [ -z "$IP" ]; do
+    echo
+    echo "No controller found. Check that it is powered on and on the same"
+    echo "network as this machine. The IP is shown on the controller under"
+    echo "Settings -> WiFi -> (connected network)."
+    read -rp "Enter IP  [s = scan network, q = quit]: " in
+    case "$in" in
+        q|Q) exit 0 ;;
+        s|S) echo "  scanning, this can take a minute..."
+             IP="$("$BIN" -t 2>&1 | grep -oE 'Found DJI RC at [0-9.]+' \
+                   | grep -oE '[0-9.]+$' | head -1)"
+             if [ -z "$IP" ]; then echo "  nothing found."; else VERIFIED=1; fi ;;
+        *)   if is_ip "$in"; then
+                 if check "$in"; then IP="$in"
+                 else
+                     read -rp "  Try anyway? [y/N] " f
+                     case "$f" in [yYjJ]*) IP="$in" ;; esac
+                 fi
+             else
+                 echo "  Not a valid IPv4 address."
+             fi ;;
+    esac
+done
+
+[ "$VERIFIED" = 1 ] && printf '%s\n' "$IP" > "$IPFILE"
+echo
+echo "Connecting to $IP  -  Ctrl+C or closing this window stops the driver."
+echo
+exec "$BIN" "$@" "$IP"
